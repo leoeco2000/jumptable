@@ -13,8 +13,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Builds a DTO tree from graph-shaped metadata and maintains a skip-list-like
- * linked index over flattened leaf fields for fast range lookups.
+ * 根据图结构元数据构建 DTO 树，并为叶子属性维护一份全局跳表索引，
+ * 用于快速完成区间命中、截断和拼接规划。
  */
 public class DtoTreeIndexBuilder {
 
@@ -33,6 +33,11 @@ public class DtoTreeIndexBuilder {
     this.rangeMode = Objects.requireNonNull(rangeMode, "rangeMode must not be null");
   }
 
+  /**
+   * 将 `javaNodeList/javaEdgeList` 转为一棵 DTO 树。
+   * 树节点同时保留两套坐标：
+   * 一套是相对根节点的绝对偏移，一套是相对所属类的原始偏移。
+   */
   public DtoIndexedTree build(List<JavaNode> javaNodeList, List<JavaEdge> javaEdgeList) {
     Objects.requireNonNull(javaNodeList, "javaNodeList must not be null");
     Objects.requireNonNull(javaEdgeList, "javaEdgeList must not be null");
@@ -136,6 +141,7 @@ public class DtoTreeIndexBuilder {
 
     for (JavaNode fieldNode : classFields.getOrDefault(classNode.uuid(), List.of())) {
       PositionAtClass positionAtClass = requirePosition(fieldNode);
+      // 构树时统一把“相对所属类”的偏移换算成“相对根”的绝对偏移。
       int absoluteStart = baseStart + positionAtClass.startIndex();
       int len = fieldLength(fieldNode);
       maxEndExclusive = Math.max(maxEndExclusive, absoluteStart + len);
@@ -218,10 +224,23 @@ public class DtoTreeIndexBuilder {
   }
 
   public enum RangeMode {
+    /** `endIndex` 按右开区间处理，即 `[startIndex, endIndex)`。 */
     END_EXCLUSIVE,
+    /** `endIndex` 按闭区间处理，即 `[startIndex, endIndex]`。 */
     END_INCLUSIVE
   }
 
+  /**
+   * 原始图节点定义。
+   *
+   * @param uuid 节点唯一标识
+   * @param nodeType 节点类型，当前支持 `DtoClass` 和 `DtoField`
+   * @param propertyId 属性名；类节点时通常为空
+   * @param dataType 属性数据类型
+   * @param partsDto 当属性引用嵌套 DTO 时，指向被引用的 DTO 类
+   * @param positionAtClass 节点相对所属类的原始区间
+   * @param className 类名；属性节点时通常为空
+   */
   public record JavaNode(
       String uuid,
       String nodeType,
@@ -231,14 +250,17 @@ public class DtoTreeIndexBuilder {
       PositionAtClass positionAtClass,
       String className) {
 
+    /** 是否为 DTO 类节点。 */
     public boolean isDtoClass() {
       return NODE_TYPE_DTO_CLASS.equals(nodeType);
     }
 
+    /** 是否为 DTO 属性节点。 */
     public boolean isDtoField() {
       return NODE_TYPE_DTO_FIELD.equals(nodeType);
     }
 
+    /** 属性节点是否引用了嵌套 DTO。 */
     public boolean referencesDto() {
       return partsDto != null
           && partsDto.partsDtoUuid() != null
@@ -246,15 +268,46 @@ public class DtoTreeIndexBuilder {
     }
   }
 
+  /**
+   * 属性引用的嵌套 DTO 信息。
+   *
+   * @param partsDtoUuid 被引用 DTO 类的 uuid
+   * @param partsDtoId 被引用 DTO 的业务标识
+   */
   public record PartsDto(String partsDtoUuid, String partsDtoId) {
   }
 
+  /**
+   * 节点相对所属类的区间。
+   *
+   * @param startIndex 起始偏移
+   * @param endIndex 结束偏移，语义由 `RangeMode` 决定
+   */
   public record PositionAtClass(int startIndex, int endIndex) {
   }
 
+  /**
+   * 图中的边定义。
+   *
+   * @param fromUuid 起点节点 uuid
+   * @param toUuid 终点节点 uuid
+   * @param edgeType 边类型
+   */
   public record JavaEdge(String fromUuid, String toUuid, String edgeType) {
   }
 
+  /**
+   * DTO 树节点。
+   *
+   * @param uuid 节点唯一标识；类节点与属性节点都复用原始节点 uuid
+   * @param fieldType 字段类型；DTO 节点固定为 `Dto`
+   * @param fieldName 字段名或类名
+   * @param startIndex 相对根节点的绝对起始偏移
+   * @param len 节点长度
+   * @param positionAtClass 相对所属类的原始区间
+   * @param dtoClassUuid 当节点表示 DTO 时，对应 DTO 类的 uuid
+   * @param children 子节点列表
+   */
   public record Node(
       String uuid,
       String fieldType,
@@ -269,15 +322,28 @@ public class DtoTreeIndexBuilder {
       children = children == null ? List.of() : List.copyOf(children);
     }
 
+    /** 返回右开区间结束位置。 */
     public int endExclusive() {
       return startIndex + len;
     }
 
+    /** 判断当前节点是否为叶子属性。 */
     public boolean isLeaf() {
       return children.isEmpty();
     }
   }
 
+  /**
+   * 区间命中结果。
+   *
+   * @param sourceNode 命中的源叶子属性
+   * @param overlapStart 命中区间在根坐标系下的绝对起点
+   * @param overlapLen 命中长度
+   * @param sourceClassOverlapStart 命中区间在源属性所属类坐标系下的起点
+   * @param sourceClassOverlapLen 命中区间在源属性所属类坐标系下的长度
+   * @param sourceOffset 命中区间相对源属性自身起点的偏移
+   * @param targetOffset 命中区间相对目标窗口起点的偏移
+   */
   public record RangeMatch(
       Node sourceNode,
       int overlapStart,
@@ -287,15 +353,18 @@ public class DtoTreeIndexBuilder {
       int sourceOffset,
       int targetOffset) {
 
+    /** 返回根坐标系下命中区间的结束位置。 */
     public int overlapEndExclusive() {
       return overlapStart + overlapLen;
     }
 
+    /** 返回源属性所属类坐标系下命中区间的结束位置。 */
     public int sourceClassOverlapEndExclusive() {
       return sourceClassOverlapStart + sourceClassOverlapLen;
     }
   }
 
+  /** DTO 树及其配套索引。 */
   public static final class DtoIndexedTree {
 
     private final Node root;
@@ -327,10 +396,12 @@ public class DtoTreeIndexBuilder {
       return root;
     }
 
+    /** 返回按绝对偏移排序后的全部叶子属性。 */
     public List<Node> orderedLeafNodes() {
       return orderedLeafNodes;
     }
 
+    /** 按树节点 uuid 获取构建后的节点。 */
     public Node getNode(String uuid) {
       Node node = nodeByUuid.get(uuid);
       if (node == null) {
@@ -339,8 +410,48 @@ public class DtoTreeIndexBuilder {
       return node;
     }
 
+    /**
+     * 直接按根坐标系下的绝对区间做查询。
+     * 这是底层能力，保留给已经完成坐标换算的调用方使用。
+     */
     public List<RangeMatch> findSourceFields(int targetStart, int targetLen) {
       return rangeJumpTable.findOverlaps(targetStart, targetLen);
+    }
+
+    /** 按节点自身区间查询，参数节点可以是类或属性。 */
+    public List<RangeMatch> findSourceFields(String targetUuid) {
+      Objects.requireNonNull(targetUuid, "targetUuid must not be null");
+      return findSourceFields(getOriginalNode(targetUuid));
+    }
+
+    /** 按节点自身区间查询，参数节点可以是类或属性。 */
+    public List<RangeMatch> findSourceFields(JavaNode targetNode) {
+      Objects.requireNonNull(targetNode, "targetNode must not be null");
+      Node resolvedTargetNode = resolveTreeNode(targetNode);
+      return findSourceFields(
+          resolvedTargetNode,
+          new WindowSlice(defaultWindowStart(resolvedTargetNode), resolvedTargetNode.len()));
+    }
+
+    /** 按“相对所属类”的窗口区间查询。 */
+    public List<RangeMatch> findSourceFields(String targetUuid, int targetOffset, int targetLen) {
+      Objects.requireNonNull(targetUuid, "targetUuid must not be null");
+      return findSourceFields(getOriginalNode(targetUuid), targetOffset, targetLen);
+    }
+
+    /** 按“相对所属类”的窗口区间查询。 */
+    public List<RangeMatch> findSourceFields(JavaNode targetNode, int targetOffset, int targetLen) {
+      Objects.requireNonNull(targetNode, "targetNode must not be null");
+      Node resolvedTargetNode = resolveTreeNode(targetNode);
+      return findSourceFields(resolvedTargetNode, new WindowSlice(targetOffset, targetLen));
+    }
+
+    private List<RangeMatch> findSourceFields(Node resolvedTargetNode, WindowSlice targetWindow) {
+      WindowBounds targetBounds = resolveWindowBounds(resolvedTargetNode, targetWindow, "target");
+      // 先把所属类坐标系下的窗口换算成绝对区间，再复用全局跳表查询。
+      return alignMatchesToTargetWindow(
+          rangeJumpTable.findOverlaps(targetBounds.absoluteStart(), targetBounds.effectiveLen()),
+          targetBounds);
     }
 
     private AssignmentPlan buildAssignmentPlan(JavaNode targetNode, JavaNode sourceNode) {
@@ -348,7 +459,11 @@ public class DtoTreeIndexBuilder {
       Objects.requireNonNull(sourceNode, "sourceNode must not be null");
       Node resolvedTargetNode = resolveTreeNode(targetNode);
       Node resolvedSourceNode = resolveTreeNode(sourceNode);
-      return buildAssignmentPlanByAbsoluteOverlap(resolvedTargetNode, resolvedSourceNode);
+      return buildAssignmentPlan(
+          resolvedTargetNode,
+          new WindowSlice(defaultWindowStart(resolvedTargetNode), resolvedTargetNode.len()),
+          resolvedSourceNode,
+          new WindowSlice(defaultWindowStart(resolvedSourceNode), resolvedSourceNode.len()));
     }
 
     private AssignmentPlan buildAssignmentPlan(
@@ -377,14 +492,13 @@ public class DtoTreeIndexBuilder {
         WindowSlice sourceWindow) {
       WindowBounds targetBounds = resolveWindowBounds(resolvedTargetNode, targetWindow, "target");
       WindowBounds sourceBounds = resolveWindowBounds(resolvedSourceNode, sourceWindow, "source");
+      // 目标窗口和源窗口都先换算成绝对区间，再取交集作为真正的赋值区间。
+      AbsoluteRange overlapRange = intersectAbsoluteRanges(targetBounds, sourceBounds);
 
-      List<Node> sourceLeafNodes = new ArrayList<>();
-      collectLeafNodes(resolvedSourceNode, sourceLeafNodes);
-      sourceLeafNodes.sort(Comparator.comparingInt(Node::startIndex));
-
-      List<RangeMatch> sourceWindowFragments = new RangeJumpTable(sourceLeafNodes)
-          .findOverlaps(sourceBounds.absoluteStart(), sourceBounds.effectiveLen());
-      List<RangeMatch> fragments = projectFragmentsToTargetWindow(sourceWindowFragments, targetBounds);
+      List<RangeMatch> sourceWindowFragments = filterSourceSubtreeMatches(
+          rangeJumpTable.findOverlaps(overlapRange.start(), overlapRange.len()),
+          resolvedSourceNode);
+      List<RangeMatch> fragments = alignMatchesToTargetWindow(sourceWindowFragments, targetBounds);
       int coveredLen = fragments.stream().mapToInt(RangeMatch::overlapLen).sum();
       boolean needsTruncation = fragments.stream()
           .anyMatch(fragment -> fragment.overlapLen() < fragment.sourceNode().len());
@@ -402,36 +516,6 @@ public class DtoTreeIndexBuilder {
           targetBounds.missingLen(),
           sourceBounds.insufficient(),
           sourceBounds.missingLen(),
-          needsTruncation,
-          needsConcatenation);
-    }
-
-    private AssignmentPlan buildAssignmentPlanByAbsoluteOverlap(
-        Node resolvedTargetNode,
-        Node resolvedSourceNode) {
-      List<Node> sourceLeafNodes = new ArrayList<>();
-      collectLeafNodes(resolvedSourceNode, sourceLeafNodes);
-      sourceLeafNodes.sort(Comparator.comparingInt(Node::startIndex));
-
-      List<RangeMatch> fragments = new RangeJumpTable(sourceLeafNodes)
-          .findOverlaps(resolvedTargetNode.startIndex(), resolvedTargetNode.len());
-      int coveredLen = fragments.stream().mapToInt(RangeMatch::overlapLen).sum();
-      boolean needsTruncation = fragments.stream()
-          .anyMatch(fragment -> fragment.overlapLen() < fragment.sourceNode().len());
-      boolean needsConcatenation = fragments.size() > 1;
-      int missingLen = Math.max(0, resolvedTargetNode.len() - coveredLen);
-
-      return new AssignmentPlan(
-          resolvedTargetNode,
-          resolvedSourceNode,
-          fragments,
-          resolvedTargetNode.len(),
-          coveredLen,
-          missingLen,
-          false,
-          0,
-          false,
-          0,
           needsTruncation,
           needsConcatenation);
     }
@@ -511,35 +595,58 @@ public class DtoTreeIndexBuilder {
       return List.copyOf(properties);
     }
 
-    private List<RangeMatch> projectFragmentsToTargetWindow(
+    private AbsoluteRange intersectAbsoluteRanges(
+        WindowBounds targetBounds,
+        WindowBounds sourceBounds) {
+      int overlapStart = Math.max(targetBounds.absoluteStart(), sourceBounds.absoluteStart());
+      int overlapEnd = Math.min(targetBounds.endExclusive(), sourceBounds.endExclusive());
+      return new AbsoluteRange(overlapStart, Math.max(0, overlapEnd - overlapStart));
+    }
+
+    private List<RangeMatch> alignMatchesToTargetWindow(
         List<RangeMatch> sourceWindowFragments,
         WindowBounds targetBounds) {
-      if (targetBounds.effectiveLen() <= 0 || sourceWindowFragments.isEmpty()) {
+      if (sourceWindowFragments.isEmpty()) {
         return List.of();
       }
 
-      List<RangeMatch> projectedFragments = new ArrayList<>();
+      List<RangeMatch> alignedFragments = new ArrayList<>();
       for (RangeMatch fragment : sourceWindowFragments) {
-        int relativeStart = fragment.targetOffset();
-        if (relativeStart >= targetBounds.effectiveLen()) {
-          continue;
-        }
-
-        int projectedLen = Math.min(fragment.overlapLen(), targetBounds.effectiveLen() - relativeStart);
-        if (projectedLen <= 0) {
-          continue;
-        }
-
-        projectedFragments.add(new RangeMatch(
+        // 跳表返回的是绝对区间命中结果，这里补齐“相对目标窗口”的偏移信息。
+        alignedFragments.add(new RangeMatch(
             fragment.sourceNode(),
-            targetBounds.absoluteStart() + relativeStart,
-            projectedLen,
+            fragment.overlapStart(),
+            fragment.overlapLen(),
             fragment.sourceClassOverlapStart(),
-            projectedLen,
+            fragment.sourceClassOverlapLen(),
             fragment.sourceOffset(),
-            relativeStart));
+            fragment.overlapStart() - targetBounds.absoluteStart()));
       }
-      return List.copyOf(projectedFragments);
+      return List.copyOf(alignedFragments);
+    }
+
+    private List<RangeMatch> filterSourceSubtreeMatches(
+        List<RangeMatch> candidateMatches,
+        Node sourceRoot) {
+      List<RangeMatch> filteredMatches = new ArrayList<>();
+      for (RangeMatch candidateMatch : candidateMatches) {
+        // 全局跳表只能先找出区间候选，再通过父子链过滤到源子树内部。
+        if (isDescendantOrSelf(candidateMatch.sourceNode().uuid(), sourceRoot.uuid())) {
+          filteredMatches.add(candidateMatch);
+        }
+      }
+      return List.copyOf(filteredMatches);
+    }
+
+    private boolean isDescendantOrSelf(String nodeUuid, String ancestorUuid) {
+      String currentUuid = nodeUuid;
+      while (currentUuid != null) {
+        if (ancestorUuid.equals(currentUuid)) {
+          return true;
+        }
+        currentUuid = parentNodeUuidByNodeUuid.get(currentUuid);
+      }
+      return false;
     }
 
     private WindowBounds resolveWindowBounds(Node node, WindowSlice window, String label) {
@@ -550,15 +657,29 @@ public class DtoTreeIndexBuilder {
         throw new IllegalArgumentException(label + " len must be >= 0");
       }
 
-      int effectiveOffset = Math.min(window.offset(), node.len());
-      int availableLen = Math.max(0, node.len() - effectiveOffset);
-      int effectiveLen = Math.min(window.len(), availableLen);
+      int nodeLocalStart = defaultWindowStart(node);
+      int nodeLocalEnd = nodeLocalStart + node.len();
+      int requestedStart = window.offset();
+      int requestedEnd = requestedStart + window.len();
+      int effectiveStart = Math.max(requestedStart, nodeLocalStart);
+      int effectiveEnd = Math.min(requestedEnd, nodeLocalEnd);
+      int effectiveLen = Math.max(0, effectiveEnd - effectiveStart);
+      // 方法参数的 offset/len 统一按“相对所属类”解释，这里完成局部区间裁剪和绝对化。
       return new WindowBounds(
-          window.offset(),
+          requestedStart,
           window.len(),
-          effectiveOffset,
+          effectiveStart,
           effectiveLen,
-          node.startIndex() + effectiveOffset);
+          ownerAbsoluteStart(node) + effectiveStart);
+    }
+
+    private int defaultWindowStart(Node node) {
+      return node.positionAtClass().startIndex();
+    }
+
+    /** 通过“绝对起点 - 相对所属类起点”反推出所属类在根坐标系下的起点。 */
+    private int ownerAbsoluteStart(Node node) {
+      return node.startIndex() - node.positionAtClass().startIndex();
     }
 
     private JavaNode getOriginalNode(String uuid) {
@@ -674,6 +795,7 @@ public class DtoTreeIndexBuilder {
       return List.copyOf(keyValues);
     }
 
+    /** 从叶子节点反向回溯到根节点，构造完整路径。 */
     private List<Node> buildPathNodes(String nodeUuid) {
       List<Node> reversedPath = new ArrayList<>();
       String currentUuid = nodeUuid;
@@ -714,6 +836,10 @@ public class DtoTreeIndexBuilder {
       int effectiveLen,
       int absoluteStart) {
 
+    private int endExclusive() {
+      return absoluteStart + effectiveLen;
+    }
+
     private boolean insufficient() {
       return requestedOffset != effectiveOffset || requestedLen != effectiveLen;
     }
@@ -721,6 +847,9 @@ public class DtoTreeIndexBuilder {
     private int missingLen() {
       return Math.max(0, requestedLen - effectiveLen);
     }
+  }
+
+  private record AbsoluteRange(int start, int len) {
   }
 
   private record AssignmentPlan(
@@ -750,6 +879,20 @@ public class DtoTreeIndexBuilder {
     }
   }
 
+  /**
+   * 对外暴露的源属性赋值结果。
+   *
+   * @param propertyUuid 源属性 uuid
+   * @param propertyName 源属性名
+   * @param pathKeyValues 从根到当前属性的路径信息
+   * @param targetInsufficient 目标窗口是否不足
+   * @param targetMissingLen 目标窗口不足的长度
+   * @param sourceInsufficient 源窗口是否不足
+   * @param sourceMissingLen 源窗口不足的长度
+   * @param needTruncate 当前源属性是否需要截断
+   * @param truncateOffset 截断起始偏移；无截断时为 0
+   * @param truncateLen 截断长度；无截断时为 0
+   */
   public record AssignmentSourceProperty(
       String propertyUuid,
       String propertyName,
@@ -767,6 +910,7 @@ public class DtoTreeIndexBuilder {
     }
   }
 
+  /** 基于叶子属性绝对区间的跳表索引。 */
   public static final class RangeJumpTable {
 
     private final SegmentLink head;
@@ -812,6 +956,10 @@ public class DtoTreeIndexBuilder {
       }
     }
 
+    /**
+     * 查询与目标绝对区间有重叠的全部叶子属性。
+     * 返回结果按绝对起点有序排列。
+     */
     public List<RangeMatch> findOverlaps(int targetStart, int targetLen) {
       if (targetLen <= 0 || head.next == null) {
         return List.of();
@@ -829,6 +977,7 @@ public class DtoTreeIndexBuilder {
 
       SegmentLink current = cursor == head ? head.next : cursor.next;
       List<RangeMatch> matches = new ArrayList<>();
+      // 定位到第一个可能相交的节点后，顺着单链表向后扫描即可。
       while (current != null && current.startIndex() < targetEndExclusive) {
         int overlapStart = Math.max(current.startIndex(), targetStart);
         int overlapEndExclusive = Math.min(current.endExclusive(), targetEndExclusive);

@@ -95,6 +95,34 @@ class DtoTreeIndexBuilderTests {
     assertEquals(1, matches.get(2).sourceClassOverlapLen());
     assertEquals(0, matches.get(2).sourceOffset());
     assertEquals(5, matches.get(2).targetOffset());
+
+    List<RangeMatch> bodyMatches = tree.findSourceFields("field-body");
+    assertEquals(2, bodyMatches.size());
+    assertEquals("code", bodyMatches.get(0).sourceNode().fieldName());
+    assertEquals(4, bodyMatches.get(0).overlapStart());
+    assertEquals(3, bodyMatches.get(0).overlapLen());
+    assertEquals(0, bodyMatches.get(0).targetOffset());
+    assertEquals("desc", bodyMatches.get(1).sourceNode().fieldName());
+    assertEquals(7, bodyMatches.get(1).overlapStart());
+    assertEquals(5, bodyMatches.get(1).overlapLen());
+    assertEquals(3, bodyMatches.get(1).targetOffset());
+
+    List<RangeMatch> windowedBodyMatches = tree.findSourceFields("field-body", 5, 10);
+    assertEquals(2, windowedBodyMatches.size());
+    assertEquals("code", windowedBodyMatches.get(0).sourceNode().fieldName());
+    assertEquals(5, windowedBodyMatches.get(0).overlapStart());
+    assertEquals(2, windowedBodyMatches.get(0).overlapLen());
+    assertEquals(1, windowedBodyMatches.get(0).sourceClassOverlapStart());
+    assertEquals(2, windowedBodyMatches.get(0).sourceClassOverlapLen());
+    assertEquals(1, windowedBodyMatches.get(0).sourceOffset());
+    assertEquals(0, windowedBodyMatches.get(0).targetOffset());
+    assertEquals("desc", windowedBodyMatches.get(1).sourceNode().fieldName());
+    assertEquals(7, windowedBodyMatches.get(1).overlapStart());
+    assertEquals(5, windowedBodyMatches.get(1).overlapLen());
+    assertEquals(3, windowedBodyMatches.get(1).sourceClassOverlapStart());
+    assertEquals(5, windowedBodyMatches.get(1).sourceClassOverlapLen());
+    assertEquals(0, windowedBodyMatches.get(1).sourceOffset());
+    assertEquals(2, windowedBodyMatches.get(1).targetOffset());
   }
 
   @Test
@@ -199,7 +227,7 @@ class DtoTreeIndexBuilderTests {
     assertEquals(2, windowedProperties.size());
     assertEquals("field-part1", windowedProperties.get(0).propertyUuid());
     assertEquals(true, windowedProperties.get(0).targetInsufficient());
-    assertEquals(5, windowedProperties.get(0).targetMissingLen());
+    assertEquals(4, windowedProperties.get(0).targetMissingLen());
     assertEquals(true, windowedProperties.get(0).sourceInsufficient());
     assertEquals(4, windowedProperties.get(0).sourceMissingLen());
     assertEquals(true, windowedProperties.get(0).needTruncate());
@@ -207,12 +235,12 @@ class DtoTreeIndexBuilderTests {
     assertEquals(1, windowedProperties.get(0).truncateLen());
     assertEquals("field-part2", windowedProperties.get(1).propertyUuid());
     assertEquals(true, windowedProperties.get(1).targetInsufficient());
-    assertEquals(5, windowedProperties.get(1).targetMissingLen());
+    assertEquals(4, windowedProperties.get(1).targetMissingLen());
     assertEquals(true, windowedProperties.get(1).sourceInsufficient());
     assertEquals(4, windowedProperties.get(1).sourceMissingLen());
-    assertEquals(true, windowedProperties.get(1).needTruncate());
+    assertEquals(false, windowedProperties.get(1).needTruncate());
     assertEquals(0, windowedProperties.get(1).truncateOffset());
-    assertEquals(4, windowedProperties.get(1).truncateLen());
+    assertEquals(0, windowedProperties.get(1).truncateLen());
 
     List<AssignmentSourceProperty> windowedPropertiesByUuid =
         tree.listSourceAssignmentProperties("field-target", 1, 10, "field-source", 2, 10);
@@ -220,7 +248,7 @@ class DtoTreeIndexBuilderTests {
     assertEquals("field-part1", windowedPropertiesByUuid.get(0).propertyUuid());
     assertEquals(true, windowedPropertiesByUuid.get(0).needTruncate());
     assertEquals("field-part2", windowedPropertiesByUuid.get(1).propertyUuid());
-    assertEquals(true, windowedPropertiesByUuid.get(1).needTruncate());
+    assertEquals(false, windowedPropertiesByUuid.get(1).needTruncate());
   }
 
   @Test
